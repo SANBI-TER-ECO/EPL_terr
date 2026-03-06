@@ -14,7 +14,7 @@ execute:
 
 ### Approach
 
-Terrestrial Ecosystem Protection Level assessment with the inclusion of additional steps to utilise combined invasive alien plant data. This assessment is for 2018 & 2024 and reveals the degree to which Protected Area targets have been met for each terrestrial ecosystem type (ecosystem representation). The analysis includes steps to address the effectiveness of PAs by down weighting the contribution to targets for areas which are heavily invaded by alien plants. .
+Terrestrial Ecosystem Protection Level assessment with the inclusion of additional steps to utilize combined invasive alien plant data. This assessment is for 2018 & 2024 and reveals the degree to which Protected Area targets have been met for each terrestrial ecosystem type (ecosystem representation). The analysis includes steps to address the effectiveness of PAs by down weighting the contribution to targets for areas which are heavily invaded by alien plants. .
 
 ```{r}
 
@@ -27,25 +27,52 @@ library(PROJ) # seems to be required due to a conflict with postgres on some mac
 
 ### Data sources & import:
 
-The 7 class South African National Land Cover data set for 2018 and 2022 (prepared by SANBI based on National Department of Forestry, Fisheries and the Environment SACALC data) was combined with invasive alien plant data from various sources described in the following workflow: [INV_terr /Invasives_combined.qmd](https://github.com/askowno/INV_terr/blob/main/Invasives_combined.qmd), and resulting in a 8 class national land cover.
+The 7 class South African National Land Cover data set for 2018 and 2022 (prepared by SANBI based on National Department of Forestry, Fisheries and the Environment SACALC data) was combined with invasive alien plant data from various sources described in the following workflow within the [Invasive species repo: landcover_inv_raster.qmd](https://github.com/SANBI-TER-ECO/INV_terr_RLE), and resulting in an 8 class national land cover.
 
 This 8 class land cover was cross tabulated with the National Vegetation Map 2024 version, vector feature geodatabase (ESRI file geodatabase) (released January 2025) curated by SANBI [@rutherford2006; @Dayaram2019] and the Protected Areas vector feature geodatabase prepared by SANBI, built from Protected and Conserved Areas (PACA) database curated by South Africa's National Department of Forestry Fisheries and the Environment. It is a flattened spatial layer with no overlaps (PACA is not flattened and has overlapping features representing each legal declaration and declaration, and separate features for additional assignments such as World Heritage Site status). This data also includes numerous defacto PAs, the information for which was provided by government Conservation Authorities. PACA 2024Q3 (released March 2025) data used as initial source.
 
 ```{r}
-#Add land cover data  (note all LC products use  WGS84 Albers Equal Area, central meridian = 25; std parallel1 = -24; std parallel2 = -33). Use Tif version as this is processed faster by R terra.
-lc2022_inv <- rast("C:/Users/skownoa/Dropbox/NBAwork/RLEworking/Invasives/lc2022_inv_max2.tif")
-lc2018_inv <- rast("C:/Users/skownoa/Dropbox/NBAwork/RLEworking/Invasives/lc2018_inv_max2.tif")
+# Base data path from .Renviron
+data_path <- Sys.getenv("DATA")
 
-# add vegetation data
-veg <- vect("C:/Users/skownoa/Dropbox/NBAwork/NLC_change/NLC_Change.gdb", "NVM2024Final_IEM5_12_07012025")  #ensure it uses proj =  wgs84 aea cm 25 -24 -33
+#Add land cover data 2018 and 2022  (note all LC products use  WGS84 Albers Equal Area, central meridian = 25; std parallel1 = -24; std parallel2 = -33). Use Tif version as this is processed faster by R terra.
+lc2022_fp <- list.files(path = data_path, 
+                           pattern = "^nlc2022_7class\\.tif$",
+                           recursive = TRUE,
+                           full.names = TRUE)
+
+lc2022 <- rast(lc2022_fp) 
+
+lc2018_fp <- list.files(path = data_path, 
+                           pattern = "^nlc2018_7class\\.tif$",
+                           recursive = TRUE,
+                           full.names = TRUE)
+
+lc2018 <- rast(lc2018_fp) 
+
+
+# Add vegetation vector
+
+# load veg data from esri gdb (note this is a folder not a file access route)
+gdb_path <- file.path(data_path, "NLC_change", "NLC_Change.gdb")
+
+veg <- vect(
+  gdb_path,
+  layer = "NVM2024Final_IEM5_12_07012025"
+)
 
 # to help differentiate masked areas (LES and SWA) from NON TERRESTRIAL areas add "NOTVEG" to T_MAPCODE where T_NAME = "Non-Terrestrial*"
 veg$T_MAPCODE <- ifelse(veg$T_Name == "Non-terrestrial (estuarine habitat)" | veg$T_Name == "Non-terrestrial (Aquatic)", "NOTVEG", veg$T_MAPCODE) 
 
-vegrast <- rasterize(veg,lc2022_inv,"T_MAPCODE")
+vegrast <- rasterize(veg,lc2022,"T_MAPCODE")
 
-#add PA data
-pa <- vect("C:/Users/skownoa/Dropbox/NBAwork/NLC_change/NLC_Change.gdb", "SANBI_PA_2024Q4_Mar2025") #ensure it uses proj =  wgs84 aea cm 25 -24 -33 
+# load PA data from same gdb as the veg esri gdb (note this is a folder not a file access route)
+
+pa <- vect(
+  gdb_path,
+  layer = "SANBI_PA_2024Q4_Mar2025"
+)
+
 ```
 
 ### Mask out Lesotho and Eswatini
@@ -55,12 +82,18 @@ To ensure the statistics on land cover change are applicable to South Africa the
 ```{r}
 # import a polygon  of  Eswatini and Lesotho then make a raster mask from this and apply to vegmap so the stats generated are National Statistics
 
-esw_les <- vect("C:/Users/skownoa/Dropbox/NBAwork/NLC_change/NLC_change.gdb", "mask_esw_les") #ensure it uses proj =  wgs84 aea cm 25 -24 -33
+# Mask out Lesotho and Eswatini to ensure SA statistics
+shp_path <- file.path(data_path, "SA_Boundaries", "SA_Boundaries_v12.shp")
 
-mask_esw_les <- rasterize(esw_les, vegrast, "CODE")
-mask_esw_les <- (mask_esw_les =="LeS") # had to do this as just using mask raster does not work for some reason
+bound <- vect(shp_path)
 
-vegrast_masked <- mask(vegrast, mask_esw_les, maskvalue=TRUE) 
+# make a mask
+mask <- bound[bound$PROVINCE %in% c("Lesotho", "Eswatini"), ]
+# erase Les  and Esw
+vegmasked <- erase(veg, mask)
+
+# make veg  raster
+vegrast_masked <- rasterize(vegmasked,lc1990,"T_MAPCODE")
 
 ```
 
